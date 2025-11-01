@@ -1,5 +1,6 @@
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, date, timedelta
+from dateutil.relativedelta import relativedelta
 from multiprocessing.context import SpawnContext
 import threading
 from typing import (
@@ -1039,3 +1040,139 @@ class BigQueryAdapter(BaseAdapter):
             catalog_integration = self.get_catalog_integration(catalog)
             return catalog_integration.build_relation(model)
         return None
+
+    @available.parse_none
+    def relative_start(self, interval) -> date:
+        """
+        Calculate a relative start date based on an interval.
+
+        Supports three formats:
+        - Days: integer (e.g., 7 for 7 days ago)
+        - Weeks: string ending with 'w' (e.g., '2w' for 2 weeks ago)
+        - Months: string ending with 'm' (e.g., '3m' for 3 months ago, to 1st of that month)
+
+        Args:
+            interval: The interval specification (int, str with 'w' or 'm' suffix)
+
+        Returns:
+            date: The calculated start date
+        """
+        start = date.today()
+
+        if str(interval).endswith('m'):
+            # Months: Go back N months to 1st of that month
+            months_back = int(str(interval).replace('m', ''))
+            start = (date.today() + relativedelta(months=-months_back)).replace(day=1)
+        elif str(interval).endswith('w'):
+            # Weeks: Go back N weeks
+            weeks_back = int(str(interval).replace('w', ''))
+            start = date.today() + relativedelta(weeks=-weeks_back)
+        else:
+            # Days: Go back N days
+            try:
+                days_back = int(interval)
+                if days_back:
+                    start = date.today() - timedelta(days=days_back)
+            except (ValueError, TypeError):
+                pass
+
+        return start
+
+    @available.parse_none
+    def delete_partitions_in_range(
+        self,
+        relation: BigQueryRelation,
+        partition_field: str,
+        start_date: date,
+        end_date: date
+    ) -> Dict[str, Any]:
+        """
+        Delete partitions in a date range using BigQuery DML.
+
+        This uses a DELETE statement with query parameters for the date range,
+        which is a zero-cost operation in BigQuery when deleting entire partitions.
+
+        Args:
+            relation: The BigQuery relation (table) to delete partitions from
+            partition_field: The name of the partition field
+            start_date: Start of the date range (inclusive)
+            end_date: End of the date range (inclusive)
+
+        Returns:
+            Dict with metadata about the deletion (rows_affected, bytes_processed, etc.)
+        """
+        # Build DELETE statement
+        sql = f"""
+        DELETE FROM `{relation.database}.{relation.schema}.{relation.identifier}`
+        WHERE {partition_field} BETWEEN @start_date AND @end_date
+        """
+
+        # Prepare query parameters
+        query_params = [
+            {"name": "start_date", "type": "DATE", "value": start_date},
+            {"name": "end_date", "type": "DATE", "value": end_date}
+        ]
+
+        # Execute with query parameters
+        logger.info(
+            f"Deleting partitions from {relation} "
+            f"where {partition_field} between {start_date} and {end_date}"
+        )
+
+        response, _ = self.connections.execute(
+            sql,
+            query_parameters=query_params,
+            fetch=False
+        )
+
+        return {
+            "rows_affected": response.rows_affected,
+            "bytes_processed": response.bytes_processed,
+            "bytes_billed": response.bytes_billed,
+            "job_id": response.job_id
+        }
+
+    @available.parse_none
+    def set_query_callback_context(
+        self,
+        unique_id: str,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        dry_run: bool = False
+    ) -> None:
+        """
+        Set callback context for real-time query status updates.
+
+        This should be called from materializations before executing queries
+        to enable status callbacks to external APIs.
+
+        Args:
+            unique_id: Unique identifier for the model
+            start_date: Start date for partition range (if applicable)
+            end_date: End date for partition range (if applicable)
+            dry_run: Whether this is a dry run
+        """
+        self.connections.set_callback_context(unique_id, start_date, end_date, dry_run)
+
+    @available.parse_none
+    def clear_query_callback_context(self) -> None:
+        """Clear callback context after query execution."""
+        self.connections.clear_callback_context()
+
+    @available.parse_none
+    def set_query_parameters(self, query_parameters: Optional[List[Dict[str, Any]]]) -> None:
+        """
+        Set query parameters for the next query execution.
+
+        This should be called from materializations to inject query parameters
+        into BigQuery queries (e.g., @start_date, @end_date).
+
+        Args:
+            query_parameters: List of parameter dictionaries with 'name', 'type', and 'value' keys
+        """
+        self.connections.set_query_parameters(query_parameters)
+
+    @available.parse_none
+    def clear_query_parameters(self) -> None:
+        """Clear query parameters after query execution."""
+        self.connections.clear_query_parameters()

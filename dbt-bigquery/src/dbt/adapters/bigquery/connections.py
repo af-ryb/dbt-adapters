@@ -2,6 +2,7 @@ from collections import defaultdict
 from concurrent.futures import TimeoutError
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import date
 import json
 from multiprocessing.context import SpawnContext
 import re
@@ -18,6 +19,7 @@ from google.cloud.bigquery import (
     LoadJobConfig,
     QueryJobConfig,
     QueryPriority,
+    ScalarQueryParameter,
     SchemaField,
     Table,
     TableReference,
@@ -38,6 +40,7 @@ from dbt.adapters.events.logging import AdapterLogger
 from dbt.adapters.events.types import SQLQuery, SQLQueryStatus
 from dbt.adapters.exceptions.connection import FailedToConnectError
 from dbt.adapters.bigquery.clients import create_bigquery_client
+from dbt.adapters.bigquery.callbacks import PartitionsModelResp, post_query_status
 from dbt.adapters.bigquery.credentials import Priority
 from dbt.adapters.bigquery.retry import RetryFactory
 
@@ -70,6 +73,10 @@ class BigQueryConnectionManager(BaseConnectionManager):
         super().__init__(profile, mp_context)
         self.jobs_by_thread: Dict[Hashable, List[str]] = defaultdict(list)
         self._retry = RetryFactory(profile.credentials)
+        # Thread-local storage for callback context
+        self.callback_context: Dict[Hashable, Optional[Dict]] = defaultdict(lambda: None)
+        # Thread-local storage for query parameters
+        self.query_parameters: Dict[Hashable, Optional[List[Dict]]] = defaultdict(lambda: None)
 
     @classmethod
     def handle_error(cls, error, message):
@@ -233,12 +240,64 @@ class BigQueryConnectionManager(BaseConnectionManager):
         self.jobs_by_thread[thread_id].append(job_id)
         return job_id
 
+    def set_callback_context(
+        self,
+        unique_id: str,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        dry_run: bool = False
+    ) -> None:
+        """
+        Set callback context for the current thread.
+
+        This context will be used to fire status callbacks during query execution.
+
+        Args:
+            unique_id: Unique identifier for the model
+            start_date: Start date for partition range (if applicable)
+            end_date: End date for partition range (if applicable)
+            dry_run: Whether this is a dry run
+        """
+        thread_id = self.get_thread_identifier()
+        self.callback_context[thread_id] = {
+            "unique_id": unique_id,
+            "start_date": start_date,
+            "end_date": end_date,
+            "dry_run": dry_run
+        }
+
+    def clear_callback_context(self) -> None:
+        """Clear callback context for the current thread."""
+        thread_id = self.get_thread_identifier()
+        self.callback_context[thread_id] = None
+
+    def get_callback_context(self) -> Optional[Dict]:
+        """Get callback context for the current thread."""
+        thread_id = self.get_thread_identifier()
+        return self.callback_context[thread_id]
+
+    def set_query_parameters(self, query_parameters: Optional[List[Dict]]) -> None:
+        """Set query parameters for the current thread."""
+        thread_id = self.get_thread_identifier()
+        self.query_parameters[thread_id] = query_parameters
+
+    def clear_query_parameters(self) -> None:
+        """Clear query parameters for the current thread."""
+        thread_id = self.get_thread_identifier()
+        self.query_parameters[thread_id] = None
+
+    def get_query_parameters(self) -> Optional[List[Dict]]:
+        """Get query parameters for the current thread."""
+        thread_id = self.get_thread_identifier()
+        return self.query_parameters[thread_id]
+
     def raw_execute(
         self,
         sql,
         use_legacy_sql=False,
         limit: Optional[int] = None,
         dry_run: bool = False,
+        query_parameters: Optional[List[Dict[str, any]]] = None,
     ):
         conn = self.get_thread_connection()
 
@@ -264,6 +323,17 @@ class BigQueryConnectionManager(BaseConnectionManager):
         if maximum_bytes_billed is not None and maximum_bytes_billed != 0:
             job_params["maximum_bytes_billed"] = maximum_bytes_billed
 
+        # Add query parameters if provided
+        if query_parameters:
+            job_params["query_parameters"] = [
+                ScalarQueryParameter(
+                    name=param["name"],
+                    type_=param["type"],
+                    value=str(param["value"])
+                )
+                for param in query_parameters
+            ]
+
         with self.exception_handler(sql):
             job_id = self.generate_job_id()
 
@@ -281,6 +351,7 @@ class BigQueryConnectionManager(BaseConnectionManager):
         use_legacy_sql: bool = False,
         limit: Optional[int] = None,
         dry_run: bool = False,
+        query_parameters: Optional[List[Dict[str, any]]] = None,
     ):
         """
         A lightweight wrapper over raw_execute that prepends the dbt query comment.
@@ -295,14 +366,38 @@ class BigQueryConnectionManager(BaseConnectionManager):
             use_legacy_sql=use_legacy_sql,
             limit=limit,
             dry_run=dry_run,
+            query_parameters=query_parameters,
         )
 
     def execute(
-        self, sql, auto_begin=False, fetch=None, limit: Optional[int] = None
+        self, sql, auto_begin=False, fetch=None, limit: Optional[int] = None, query_parameters: Optional[List[Dict[str, any]]] = None
     ) -> Tuple[BigQueryAdapterResponse, "agate.Table"]:
         sql = self._add_query_comment(sql)
+
+        # Check for thread-local query parameters if not explicitly provided
+        if query_parameters is None:
+            query_parameters = self.get_query_parameters()
+
+        # Check for callback context and fire 'running' callback
+        callback_ctx = self.get_callback_context()
+        callback_job_id = None
+        if callback_ctx:
+            callback_job_id = str(uuid.uuid4())
+            try:
+                post_query_status(PartitionsModelResp(
+                    unique_id=callback_ctx["unique_id"],
+                    job_id=callback_job_id,
+                    status='running',
+                    start_date=callback_ctx.get("start_date"),
+                    end_date=callback_ctx.get("end_date"),
+                    dry_run=callback_ctx.get("dry_run", False),
+                ))
+            except Exception as e:
+                logger.debug(f"Failed to fire 'running' callback: {e}")
+
+        # Execute query
         # auto_begin is ignored on bigquery, and only included for consistency
-        query_job, iterator = self.raw_execute(sql, limit=limit)
+        query_job, iterator = self.raw_execute(sql, limit=limit, query_parameters=query_parameters)
 
         if fetch:
             table = self.get_table_from_response(iterator)
@@ -375,6 +470,34 @@ class BigQueryConnectionManager(BaseConnectionManager):
             job_id=job_id,
             slot_ms=slot_ms,
         )
+
+        # Fire 'done' callback if context was set
+        if callback_ctx:
+            try:
+                # Check for errors
+                error_msg = None
+                success = True
+                if hasattr(query_job, 'errors') and query_job.errors:
+                    error_msg = '; '.join([e.get('message', str(e)) for e in query_job.errors])
+                    success = False
+
+                post_query_status(PartitionsModelResp(
+                    unique_id=callback_ctx["unique_id"],
+                    job_id=callback_job_id or job_id,
+                    status='done',
+                    success=success,
+                    start_date=callback_ctx.get("start_date"),
+                    end_date=callback_ctx.get("end_date"),
+                    error=error_msg,
+                    dry_run=callback_ctx.get("dry_run", False),
+                    bytes_billed=bytes_billed,
+                    bytes_processed=bytes_processed,
+                    slot_ms=slot_ms,
+                    started=getattr(query_job, 'started', None),
+                    ended=getattr(query_job, 'ended', None),
+                ))
+            except Exception as e:
+                logger.debug(f"Failed to fire 'done' callback: {e}")
 
         return response, table
 
