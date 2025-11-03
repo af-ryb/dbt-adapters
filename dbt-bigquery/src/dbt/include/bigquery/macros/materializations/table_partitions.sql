@@ -33,29 +33,32 @@
   {# Date Resolution Logic                       #}
   {# ============================================ #}
 
-  {# Resolve start_date from runtime var #}
+  {# Resolve start_date with correct precedence (matching original implementation) #}
   {%- set start_date_var = var("start_date", none) -%}
   {%- set run_tags = var("run_tags", none) -%}
 
-  {%- if start_date_var == '@start_date' %}
-    {# Dynamic date based on selector_update_range #}
+  {# Priority 1: default_start_date from config (overrides everything) #}
+  {%- if default_start_date is not none %}
+    {%- set start_date = modules.datetime.datetime.strptime(default_start_date, '%Y-%m-%d').date() -%}
+    {{ log("Using default_start_date from config: " ~ start_date, info=True) }}
+
+  {# Priority 2: @start_date dynamic resolution via selector #}
+  {%- elif start_date_var == '@start_date' %}
     {%- set interval = selector_update_range.get(run_tags, 0) -%}
     {%- set start_date = adapter.relative_start(interval) -%}
     {{ log("Resolved @start_date with selector '" ~ run_tags ~ "' (interval: " ~ interval ~ ") to " ~ start_date, info=True) }}
+
+  {# Priority 3: Explicit date string from runtime var #}
   {%- elif start_date_var -%}
-    {# Explicit date string - parse it #}
     {%- set start_date = modules.datetime.datetime.strptime(start_date_var, '%Y-%m-%d').date() -%}
     {{ log("Using explicit start_date: " ~ start_date, info=True) }}
-  {%- elif default_start_date -%}
-    {# Use default from config #}
-    {%- set start_date = modules.datetime.datetime.strptime(default_start_date, '%Y-%m-%d').date() -%}
-    {{ log("Using default_start_date: " ~ start_date, info=True) }}
+
   {%- else -%}
     {%- set start_date = none -%}
   {%- endif -%}
 
-  {# Apply min_start_date boundary if configured #}
-  {%- if start_date and min_start_date -%}
+  {# Apply min_start_date boundary AFTER resolution #}
+  {%- if start_date is not none and min_start_date is not none -%}
     {%- set min_date_obj = modules.datetime.datetime.strptime(min_start_date, '%Y-%m-%d').date() -%}
     {%- if start_date < min_date_obj -%}
       {{ log("Adjusting start_date from " ~ start_date ~ " to min_start_date " ~ min_date_obj, info=True) }}
@@ -101,18 +104,6 @@
     {%- set old_relation = none -%}
   {% endif %}
 
-  {# Delete existing partitions in date range if table exists #}
-  {%- if old_relation and old_relation.is_table and start_date and end_date -%}
-    {{ log("Deleting partitions in range: " ~ start_date ~ " to " ~ end_date, info=True) }}
-    {%- set deletion_result = adapter.delete_partitions_in_range(
-        old_relation,
-        partition_field,
-        start_date,
-        end_date
-    ) -%}
-    {{ log("Deleted " ~ deletion_result.rows_affected ~ " rows from partitions", info=True) }}
-  {%- endif -%}
-
   {# ============================================ #}
   {# Main Query Execution                        #}
   {# ============================================ #}
@@ -130,10 +121,35 @@
     {% do adapter.set_query_parameters(query_params) %}
   {%- endif -%}
 
-  {# Execute main query using standard dbt flow #}
-  {%- call statement('main', language=language) -%}
-    {{ create_table_as(False, target_relation, compiled_code, language) }}
-  {%- endcall -%}
+  {# Decide between CREATE TABLE AS vs DELETE + INSERT #}
+  {%- if old_relation is none or not old_relation.is_table -%}
+
+    {# Table doesn't exist: CREATE TABLE AS SELECT #}
+    {{ log("Creating new table " ~ target_relation, info=True) }}
+    {%- call statement('main', language=language) -%}
+      {{ create_table_as(False, target_relation, compiled_code, language) }}
+    {%- endcall -%}
+
+  {%- else -%}
+
+    {# Table exists: Use multi-statement DELETE + INSERT #}
+    {{ log("Table exists, using DELETE + INSERT for partitions: " ~ start_date ~ " to " ~ end_date, info=True) }}
+
+    {%- set multi_statement_sql -%}
+-- Delete existing partitions in range
+DELETE FROM `{{ target_relation.database }}.{{ target_relation.schema }}.{{ target_relation.identifier }}`
+WHERE {{ partition_field }} BETWEEN @start_date AND @end_date;
+
+-- Insert new data for the same range
+INSERT INTO `{{ target_relation.database }}.{{ target_relation.schema }}.{{ target_relation.identifier }}`
+{{ compiled_code }};
+    {%- endset -%}
+
+    {%- call statement('main', language=language) -%}
+      {{ multi_statement_sql }}
+    {%- endcall -%}
+
+  {%- endif -%}
 
   {# Clear query parameters and callback context #}
   {% do adapter.clear_query_parameters() %}

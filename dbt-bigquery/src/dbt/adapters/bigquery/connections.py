@@ -370,7 +370,7 @@ class BigQueryConnectionManager(BaseConnectionManager):
         )
 
     def execute(
-        self, sql, auto_begin=False, fetch=None, limit: Optional[int] = None, query_parameters: Optional[List[Dict[str, any]]] = None
+        self, sql, auto_begin=False, fetch=None, limit: Optional[int] = None, query_parameters: Optional[List[Dict[str, any]]] = None, dry_run: bool = False
     ) -> Tuple[BigQueryAdapterResponse, "agate.Table"]:
         sql = self._add_query_comment(sql)
 
@@ -378,15 +378,23 @@ class BigQueryConnectionManager(BaseConnectionManager):
         if query_parameters is None:
             query_parameters = self.get_query_parameters()
 
-        # Check for callback context and fire 'running' callback
+        # Get callback context (will fire after we have real job_id)
         callback_ctx = self.get_callback_context()
-        callback_job_id = None
+
+        # Check for dry_run from callback context if not explicitly provided
+        if not dry_run and callback_ctx:
+            dry_run = callback_ctx.get("dry_run", False)
+
+        # Execute query
+        # auto_begin is ignored on bigquery, and only included for consistency
+        query_job, iterator = self.raw_execute(sql, limit=limit, query_parameters=query_parameters, dry_run=dry_run)
+
+        # Fire 'running' callback with ACTUAL BigQuery job_id
         if callback_ctx:
-            callback_job_id = str(uuid.uuid4())
             try:
                 post_query_status(PartitionsModelResp(
                     unique_id=callback_ctx["unique_id"],
-                    job_id=callback_job_id,
+                    job_id=query_job.job_id,  # Use REAL BigQuery job_id
                     status='running',
                     start_date=callback_ctx.get("start_date"),
                     end_date=callback_ctx.get("end_date"),
@@ -394,10 +402,6 @@ class BigQueryConnectionManager(BaseConnectionManager):
                 ))
             except Exception as e:
                 logger.debug(f"Failed to fire 'running' callback: {e}")
-
-        # Execute query
-        # auto_begin is ignored on bigquery, and only included for consistency
-        query_job, iterator = self.raw_execute(sql, limit=limit, query_parameters=query_parameters)
 
         if fetch:
             table = self.get_table_from_response(iterator)
@@ -471,7 +475,7 @@ class BigQueryConnectionManager(BaseConnectionManager):
             slot_ms=slot_ms,
         )
 
-        # Fire 'done' callback if context was set
+        # Fire 'done' callback if context was set (use same job_id as 'running')
         if callback_ctx:
             try:
                 # Check for errors
@@ -483,7 +487,7 @@ class BigQueryConnectionManager(BaseConnectionManager):
 
                 post_query_status(PartitionsModelResp(
                     unique_id=callback_ctx["unique_id"],
-                    job_id=callback_job_id or job_id,
+                    job_id=job_id,  # Use same BigQuery job_id as 'running' callback
                     status='done',
                     success=success,
                     start_date=callback_ctx.get("start_date"),
