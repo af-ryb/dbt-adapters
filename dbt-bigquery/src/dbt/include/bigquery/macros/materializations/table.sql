@@ -29,10 +29,17 @@
     {% do adapter.drop_relation(old_relation) %}
   {% endif %}
 
+  {# Enable dry_run support #}
+  {%- set dry_run = var("dry_run", false) -%}
+  {% do adapter.set_query_callback_context(model.unique_id, dry_run=dry_run) %}
+
   -- build model
   {%- call statement('main', language=language) -%}
     {{ create_table_as(False, target_relation, compiled_code, language) }}
   {%- endcall -%}
+
+  {# Clear callback context #}
+  {% do adapter.clear_query_callback_context() %}
 
   {{ run_hooks(post_hooks) }}
 

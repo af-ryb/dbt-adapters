@@ -95,6 +95,10 @@
 
   {{ run_hooks(pre_hooks) }}
 
+  {# Enable dry_run support for all execution paths #}
+  {%- set dry_run = var("dry_run", false) -%}
+  {% do adapter.set_query_callback_context(model.unique_id, dry_run=dry_run) %}
+
   {% if partition_by.copy_partitions is true and strategy not in ['insert_overwrite', 'microbatch'] %} {#-- We can't copy partitions with merge strategy --#}
         {% set wrong_strategy_msg -%}
         The 'copy_partitions' option requires the 'incremental_strategy' option to be set to 'insert_overwrite' or 'microbatch'.
@@ -161,6 +165,9 @@
     {% endcall %}
 
   {% endif %}
+
+  {# Clear callback context #}
+  {% do adapter.clear_query_callback_context() %}
 
   {{ run_hooks(post_hooks) }}
 

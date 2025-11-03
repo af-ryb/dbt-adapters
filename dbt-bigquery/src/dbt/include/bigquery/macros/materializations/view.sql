@@ -12,7 +12,14 @@
     -- grab current tables grants config for comparision later on
     {% set grant_config = config.get('grants') %}
 
+    {# Enable dry_run support #}
+    {%- set dry_run = var("dry_run", false) -%}
+    {% do adapter.set_query_callback_context(model.unique_id, dry_run=dry_run) %}
+
     {% set to_return = bigquery__create_or_replace_view() %}
+
+    {# Clear callback context #}
+    {% do adapter.clear_query_callback_context() %}
 
     {% set target_relation = this.incorporate(type='view') %}
 
