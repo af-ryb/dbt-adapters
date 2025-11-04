@@ -213,7 +213,6 @@ Compare old vs new adapter:
 - [ ] Update team wiki/docs with new adapter location
 - [ ] Document new adapter methods:
   - `adapter.relative_start(interval)`
-  - `adapter.delete_partitions_in_range(...)`
   - `adapter.set_query_callback_context(...)`
   - `adapter.set_query_parameters(...)`
 - [ ] Share `TABLE_PARTITIONS_GUIDE.md` with team

@@ -135,10 +135,13 @@
     {# Table exists: Use multi-statement DELETE + INSERT #}
     {{ log("Table exists, using DELETE + INSERT for partitions: " ~ start_date ~ " to " ~ end_date, info=True) }}
 
+    {# Determine truncation function based on data type for granularity support #}
+    {%- set trunc_func = 'TIMESTAMP_TRUNC' if partition_by.data_type == 'timestamp' else 'DATE_TRUNC' -%}
+
     {%- set multi_statement_sql -%}
--- Delete existing partitions in range
+-- Delete existing partitions in range (using {{ trunc_func }} for {{ partition_by.granularity }} granularity)
 DELETE FROM `{{ target_relation.database }}.{{ target_relation.schema }}.{{ target_relation.identifier }}`
-WHERE {{ partition_field }} BETWEEN @start_date AND @end_date;
+WHERE {{ trunc_func }}({{ partition_field }}, {{ partition_by.granularity.upper() }}) BETWEEN @start_date AND @end_date;
 
 -- Insert new data for the same range
 INSERT INTO `{{ target_relation.database }}.{{ target_relation.schema }}.{{ target_relation.identifier }}`

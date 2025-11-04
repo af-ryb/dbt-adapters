@@ -106,6 +106,40 @@ Deleted 50000 rows from partitions
 
 This is a **zero-cost operation** in BigQuery when deleting entire partitions using DML with `@start_date` and `@end_date` parameters.
 
+#### Partition Granularity Support
+
+The materialization automatically handles different partition granularities (`DAY`, `MONTH`, `YEAR`, `HOUR`) to ensure zero-cost partition deletion:
+
+**Day granularity** (default):
+```yaml
+partition_by:
+  field: date
+  data_type: date
+  granularity: day  # Default
+```
+
+**Month granularity**:
+```yaml
+partition_by:
+  field: date
+  data_type: date
+  granularity: month  # Partitioned by month
+```
+
+**Hour granularity** (requires TIMESTAMP):
+```yaml
+partition_by:
+  field: event_timestamp
+  data_type: timestamp
+  granularity: hour  # Partitioned by hour
+```
+
+The DELETE statement automatically uses the correct truncation function:
+- For `DATE` partitions: `DATE_TRUNC(field, GRANULARITY)`
+- For `TIMESTAMP` partitions: `TIMESTAMP_TRUNC(field, GRANULARITY)`
+
+**Why this matters**: Without proper truncation, BigQuery charges for scanning partitions when granularity is not `DAY`. The materialization handles this automatically to maintain zero-cost deletion.
+
 ### 4. Real-time Status Callbacks
 
 Enable real-time query status updates to external APIs by setting environment variables:
@@ -260,10 +294,6 @@ Calculate relative start date:
 - `adapter.relative_start(7)` → 7 days ago
 - `adapter.relative_start('2w')` → 2 weeks ago
 - `adapter.relative_start('3m')` → 3 months ago (to 1st of that month)
-
-### `adapter.delete_partitions_in_range(relation, partition_field, start_date, end_date)`
-
-Delete partitions in date range using zero-cost DML.
 
 ### `adapter.set_query_callback_context(unique_id, start_date, end_date, dry_run)`
 

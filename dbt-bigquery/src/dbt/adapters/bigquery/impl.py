@@ -1079,60 +1079,6 @@ class BigQueryAdapter(BaseAdapter):
         return start
 
     @available.parse_none
-    def delete_partitions_in_range(
-        self,
-        relation: BigQueryRelation,
-        partition_field: str,
-        start_date: date,
-        end_date: date
-    ) -> Dict[str, Any]:
-        """
-        Delete partitions in a date range using BigQuery DML.
-
-        This uses a DELETE statement with query parameters for the date range,
-        which is a zero-cost operation in BigQuery when deleting entire partitions.
-
-        Args:
-            relation: The BigQuery relation (table) to delete partitions from
-            partition_field: The name of the partition field
-            start_date: Start of the date range (inclusive)
-            end_date: End of the date range (inclusive)
-
-        Returns:
-            Dict with metadata about the deletion (rows_affected, bytes_processed, etc.)
-        """
-        # Build DELETE statement
-        sql = f"""
-        DELETE FROM `{relation.database}.{relation.schema}.{relation.identifier}`
-        WHERE {partition_field} BETWEEN @start_date AND @end_date
-        """
-
-        # Prepare query parameters
-        query_params = [
-            {"name": "start_date", "type": "DATE", "value": start_date},
-            {"name": "end_date", "type": "DATE", "value": end_date}
-        ]
-
-        # Execute with query parameters
-        logger.info(
-            f"Deleting partitions from {relation} "
-            f"where {partition_field} between {start_date} and {end_date}"
-        )
-
-        response, _ = self.connections.execute(
-            sql,
-            query_parameters=query_params,
-            fetch=False
-        )
-
-        return {
-            "rows_affected": response.rows_affected,
-            "bytes_processed": response.bytes_processed,
-            "bytes_billed": response.bytes_billed,
-            "job_id": response.job_id
-        }
-
-    @available.parse_none
     def set_query_callback_context(
         self,
         unique_id: str,
