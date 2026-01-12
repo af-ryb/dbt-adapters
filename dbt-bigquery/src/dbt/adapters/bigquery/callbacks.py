@@ -26,14 +26,14 @@ class PartitionsModelResp(dbtClassMixin):
     dates, and execution status.
     """
     unique_id: str
-    job_id: str
-    status: str
+    job_id: Optional[str] = None
+    dry_run: bool = False
+    status: Optional[str] = None
     start_date: Optional[date] = None
     end_date: Optional[date] = None
     bytes_billed: Optional[int] = None
     bytes_processed: Optional[int] = None
     slot_ms: Optional[int] = None
-    dry_run: bool = False
     success: Optional[bool] = None
     error: Optional[str] = None
     started: Optional[datetime] = None
