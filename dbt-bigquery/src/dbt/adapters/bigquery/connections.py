@@ -25,7 +25,7 @@ from google.cloud.bigquery import (
     TableReference,
 )
 from google.cloud.exceptions import BadRequest, Forbidden, NotFound
-
+from google.cloud.bigquery import WriteDisposition
 from dbt_common.events.contextvars import get_node_info
 from dbt_common.events.functions import fire_event
 from dbt_common.exceptions import DbtDatabaseError, DbtRuntimeError
@@ -552,6 +552,218 @@ class BigQueryConnectionManager(BaseConnectionManager):
                 post_query_status(PartitionsModelResp(
                     unique_id=callback_ctx["unique_id"],
                     job_id=job_id,  # Use same BigQuery job_id as 'running' callback
+                    status='done',
+                    success=success,
+                    start_date=callback_ctx.get("start_date"),
+                    end_date=callback_ctx.get("end_date"),
+                    error=error_msg,
+                    dry_run=callback_ctx.get("dry_run", False),
+                    bytes_billed=bytes_billed,
+                    bytes_processed=bytes_processed,
+                    slot_ms=slot_ms,
+                    started=getattr(query_job, 'started', None),
+                    ended=getattr(query_job, 'ended', None),
+                ))
+            except Exception as e:
+                logger.debug(f"Failed to fire 'done' callback: {e}")
+
+        return response, table
+
+    def execute_to_table(
+        self,
+        sql: str,
+        destination_database: str,
+        destination_schema: str,
+        destination_table: str,
+        write_disposition: str = "WRITE_APPEND",
+        query_parameters: Optional[List[Dict[str, any]]] = None,
+        dry_run: bool = False,
+    ) -> Tuple[BigQueryAdapterResponse, "agate.Table"]:
+        """Execute query and write results directly to destination table.
+
+        This uses BigQuery's QueryJobConfig.destination feature which:
+        - Matches columns by NAME (not position)
+        - Handles schema evolution gracefully
+        - Avoids INSERT INTO column ordering issues
+
+        Args:
+            sql: The SELECT query to execute
+            destination_database: Target project
+            destination_schema: Target dataset
+            destination_table: Target table name
+            write_disposition: WRITE_APPEND or WRITE_TRUNCATE
+            query_parameters: Optional query parameters
+            dry_run: If True, validate without executing
+
+        Returns:
+            Tuple of (BigQueryAdapterResponse, agate.Table)
+        """
+
+        sql = self._add_query_comment(sql)
+
+        # Check for thread-local query parameters if not explicitly provided
+        if query_parameters is None:
+            query_parameters = self.get_query_parameters()
+
+        # Get callback context
+        callback_ctx = self.get_callback_context()
+
+        # Check for dry_run from callback context if not explicitly provided
+        if not dry_run and callback_ctx:
+            dry_run = callback_ctx.get("dry_run", False)
+
+        conn = self.get_thread_connection()
+        fire_event(SQLQuery(conn_name=conn.name, sql=sql, node_info=get_node_info()))
+
+        labels = self.get_labels_from_query_comment()
+        labels["dbt_invocation_id"] = get_invocation_id()
+
+        # Build destination table reference
+        destination_ref = self.table_ref(destination_database, destination_schema, destination_table)
+
+        # Map string to WriteDisposition enum
+        disposition_map = {
+            "WRITE_APPEND": WriteDisposition.WRITE_APPEND,
+            "WRITE_TRUNCATE": WriteDisposition.WRITE_TRUNCATE,
+        }
+
+        job_params = {
+            "use_legacy_sql": False,
+            "labels": labels,
+            "dry_run": dry_run,
+            "destination": destination_ref,
+            "write_disposition": disposition_map.get(write_disposition, WriteDisposition.WRITE_APPEND),
+        }
+
+        priority = conn.credentials.priority
+        if priority == Priority.Batch:
+            job_params["priority"] = QueryPriority.BATCH
+        else:
+            job_params["priority"] = QueryPriority.INTERACTIVE
+
+        maximum_bytes_billed = conn.credentials.maximum_bytes_billed
+        if maximum_bytes_billed is not None and maximum_bytes_billed != 0:
+            job_params["maximum_bytes_billed"] = maximum_bytes_billed
+
+        # Add query parameters if provided
+        if query_parameters:
+            job_params["query_parameters"] = [
+                ScalarQueryParameter(
+                    name=param["name"],
+                    type_=param["type"],
+                    value=str(param["value"])
+                )
+                for param in query_parameters
+            ]
+
+        with self.exception_handler(sql):
+            job_id = self.generate_job_id()
+            query_job, iterator = self._query_and_results(
+                conn,
+                sql,
+                job_params,
+                job_id,
+            )
+
+        # Fire 'running' callback with ACTUAL BigQuery job_id
+        if callback_ctx:
+            try:
+                post_query_status(PartitionsModelResp(
+                    unique_id=callback_ctx["unique_id"],
+                    job_id=query_job.job_id,
+                    status='running',
+                    start_date=callback_ctx.get("start_date"),
+                    end_date=callback_ctx.get("end_date"),
+                    dry_run=callback_ctx.get("dry_run", False),
+                ))
+            except Exception as e:
+                logger.debug(f"Failed to fire 'running' callback: {e}")
+
+        from dbt_common.clients import agate_helper
+        table = agate_helper.empty_table()
+
+        # For dry_run, return early
+        if dry_run:
+            bytes_processed = query_job.total_bytes_processed
+            bytes_billed = query_job.total_bytes_billed
+            slot_ms = query_job.slot_millis
+            processed_bytes = self.format_bytes(bytes_processed) if bytes_processed else None
+
+            response = BigQueryAdapterResponse(
+                _message=f"DRY RUN ({processed_bytes} processed)" if processed_bytes else "DRY RUN",
+                code="DRY RUN",
+                bytes_processed=bytes_processed,
+                bytes_billed=bytes_billed,
+                location=query_job.location,
+                project_id=query_job.project,
+                job_id=query_job.job_id,
+                slot_ms=slot_ms,
+            )
+
+            if callback_ctx:
+                try:
+                    post_query_status(PartitionsModelResp(
+                        unique_id=callback_ctx["unique_id"],
+                        job_id=query_job.job_id,
+                        status='done',
+                        success=True,
+                        start_date=callback_ctx.get("start_date"),
+                        end_date=callback_ctx.get("end_date"),
+                        error=None,
+                        dry_run=True,
+                        bytes_billed=bytes_billed,
+                        bytes_processed=bytes_processed,
+                        slot_ms=slot_ms,
+                        started=getattr(query_job, 'started', None),
+                        ended=getattr(query_job, 'ended', None),
+                    ))
+                except Exception as e:
+                    logger.debug(f"Failed to fire 'done' callback: {e}")
+
+            return response, table
+
+        # Build response for successful execution
+        num_rows = query_job.num_dml_affected_rows
+        bytes_processed = query_job.total_bytes_processed
+        bytes_billed = query_job.total_bytes_billed
+        slot_ms = query_job.slot_millis
+        processed_bytes = self.format_bytes(bytes_processed)
+        location = query_job.location
+        job_id = query_job.job_id
+        project_id = query_job.project
+
+        if num_rows is not None:
+            num_rows_formatted = self.format_rows_number(num_rows)
+            message = f"SELECT ({num_rows_formatted} rows, {processed_bytes} processed)"
+        elif bytes_processed is not None:
+            message = f"SELECT ({processed_bytes} processed)"
+        else:
+            message = "SELECT"
+
+        response = BigQueryAdapterResponse(
+            _message=message,
+            rows_affected=num_rows,
+            code="SELECT",
+            bytes_processed=bytes_processed,
+            bytes_billed=bytes_billed,
+            location=location,
+            project_id=project_id,
+            job_id=job_id,
+            slot_ms=slot_ms,
+        )
+
+        # Fire 'done' callback
+        if callback_ctx:
+            try:
+                error_msg = None
+                success = True
+                if hasattr(query_job, 'errors') and query_job.errors:
+                    error_msg = '; '.join([e.get('message', str(e)) for e in query_job.errors])
+                    success = False
+
+                post_query_status(PartitionsModelResp(
+                    unique_id=callback_ctx["unique_id"],
+                    job_id=job_id,
                     status='done',
                     success=success,
                     start_date=callback_ctx.get("start_date"),

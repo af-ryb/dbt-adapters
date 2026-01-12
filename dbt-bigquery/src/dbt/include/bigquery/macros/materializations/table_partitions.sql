@@ -134,27 +134,47 @@
 
   {%- else -%}
 
-    {# Table exists: Use multi-statement DELETE + INSERT #}
-    {%- if not dry_run -%}
-      {{ log("Table exists, using DELETE + INSERT for partitions: " ~ start_date ~ " to " ~ end_date, info=True) }}
-    {%- endif -%}
-
+    {# Table exists #}
     {# Determine truncation function based on data type for granularity support #}
     {%- set trunc_func = 'TIMESTAMP_TRUNC' if partition_by.data_type == 'timestamp' else 'DATE_TRUNC' -%}
 
-    {%- set multi_statement_sql -%}
--- Delete existing partitions in range (using {{ trunc_func }} for {{ partition_by.granularity }} granularity)
+    {%- if dry_run -%}
+      {# Dry run: validate query only, no DELETE #}
+      {{ log("Dry run: validating select statement against " ~ target_relation, info=True) }}
+      {{ write(compiled_code) }}
+
+      {# execute_to_table reads dry_run from callback context #}
+      {%- set response = adapter.execute_to_table(
+          sql=compiled_code,
+          destination_relation=target_relation,
+          write_disposition='WRITE_APPEND'
+      ) -%}
+      {% do store_result('main', response=response) %}
+
+    {%- else -%}
+      {# Real run: DELETE + INSERT #}
+      {{ log("Table exists, updating partitions: " ~ start_date ~ " to " ~ end_date, info=True) }}
+
+      {# Delete partitions in range first #}
+      {%- set delete_sql -%}
 DELETE FROM `{{ target_relation.database }}.{{ target_relation.schema }}.{{ target_relation.identifier }}`
-WHERE {{ trunc_func }}({{ partition_field }}, {{ partition_by.granularity.upper() }}) BETWEEN @start_date AND @end_date;
+WHERE {{ trunc_func }}({{ partition_field }}, {{ partition_by.granularity.upper() }}) BETWEEN @start_date AND @end_date
+      {%- endset -%}
 
--- Insert new data for the same range
-INSERT INTO `{{ target_relation.database }}.{{ target_relation.schema }}.{{ target_relation.identifier }}`
-{{ compiled_code }};
-    {%- endset -%}
+      {%- call statement('delete_partitions', language=language) -%}
+        {{ delete_sql }}
+      {%- endcall -%}
 
-    {%- call statement('main', language=language) -%}
-      {{ multi_statement_sql }}
-    {%- endcall -%}
+      {# Insert using destination table API (column-name matching) #}
+      {{ write(compiled_code) }}
+      {%- set response = adapter.execute_to_table(
+          sql=compiled_code,
+          destination_relation=target_relation,
+          write_disposition='WRITE_APPEND'
+      ) -%}
+      {% do store_result('main', response=response) %}
+
+    {%- endif -%}
 
   {%- endif -%}
 

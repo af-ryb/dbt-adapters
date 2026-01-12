@@ -464,6 +464,35 @@ class BigQueryAdapter(BaseAdapter):
 
         return "COPY TABLE with materialization: {}".format(materialization)
 
+    @available.parse(lambda *a, **k: "")
+    def execute_to_table(
+        self,
+        sql: str,
+        destination_relation,
+        write_disposition: str = "WRITE_APPEND",
+    ) -> BigQueryAdapterResponse:
+        """Execute query writing results directly to destination table.
+
+        Uses BigQuery's QueryJobConfig.destination feature which matches
+        columns by NAME (not position), avoiding INSERT INTO column ordering issues.
+
+        Args:
+            sql: The SELECT query to execute
+            destination_relation: Target relation (table) to write to
+            write_disposition: WRITE_APPEND or WRITE_TRUNCATE
+
+        Returns:
+            BigQueryAdapterResponse with query execution details
+        """
+        response, _ = self.connections.execute_to_table(
+            sql=sql,
+            destination_database=destination_relation.database,
+            destination_schema=destination_relation.schema,
+            destination_table=destination_relation.identifier,
+            write_disposition=write_disposition,
+        )
+        return response
+
     @available.parse(lambda *a, **k: [])
     def get_column_schema_from_query(self, sql: str) -> List[BigQueryColumn]:
         """Get a list of the column names and data types from the given sql.
