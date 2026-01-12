@@ -78,15 +78,38 @@ class BigQueryConnectionManager(BaseConnectionManager):
         # Thread-local storage for query parameters
         self.query_parameters: Dict[Hashable, Optional[List[Dict]]] = defaultdict(lambda: None)
 
-    @classmethod
-    def handle_error(cls, error, message):
+    def handle_error(self, error, message):
         error_msg = "\n".join([item["message"] for item in error.errors])
         if hasattr(error, "query_job"):
             logger.error(
-                cls._bq_job_link(
+                self._bq_job_link(
                     error.query_job.location, error.query_job.project, error.query_job.job_id
                 )
             )
+
+        # Send error status via callback if context is set
+        callback_ctx = self.get_callback_context()
+        if callback_ctx:
+            try:
+                job_id = error.query_job.job_id if hasattr(error, "query_job") else None
+                post_query_status(PartitionsModelResp(
+                    unique_id=callback_ctx["unique_id"],
+                    job_id=job_id,
+                    status='done',
+                    success=False,
+                    start_date=callback_ctx.get("start_date"),
+                    end_date=callback_ctx.get("end_date"),
+                    error=error_msg,
+                    dry_run=callback_ctx.get("dry_run", False),
+                    bytes_billed=None,
+                    bytes_processed=None,
+                    slot_ms=None,
+                    started=None,
+                    ended=None,
+                ))
+            except Exception as e:
+                logger.debug(f"Failed to fire error callback: {e}")
+
         raise DbtDatabaseError(error_msg)
 
     def clear_transaction(self):
