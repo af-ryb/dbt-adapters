@@ -155,6 +155,9 @@
       {# Real run: DELETE + INSERT #}
       {{ log("Table exists, updating partitions: " ~ start_date ~ " to " ~ end_date, info=True) }}
 
+      {# Clear callback context before DELETE - we don't want to track DELETE job_id #}
+      {% do adapter.clear_query_callback_context() %}
+
       {# Delete partitions in range first #}
       {%- set delete_sql -%}
 DELETE FROM `{{ target_relation.database }}.{{ target_relation.schema }}.{{ target_relation.identifier }}`
@@ -164,6 +167,9 @@ WHERE {{ trunc_func }}({{ partition_field }}, {{ partition_by.granularity.upper(
       {%- call statement('delete_partitions', language=language) -%}
         {{ delete_sql }}
       {%- endcall -%}
+
+      {# Re-set callback context for INSERT - this is the job we want to track #}
+      {% do adapter.set_query_callback_context(unique_id, start_date, end_date, dry_run) %}
 
       {# Insert using destination table API (column-name matching) #}
       {{ write(compiled_code) }}
