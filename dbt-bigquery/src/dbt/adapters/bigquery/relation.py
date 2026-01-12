@@ -121,6 +121,11 @@ class BigQueryRelation(BaseRelation):
     def information_schema(self, identifier: Optional[str] = None) -> "BigQueryInformationSchema":
         return BigQueryInformationSchema.from_relation(self, identifier)
 
+    def render(self) -> str:
+        # if there is nothing set, this will return the empty string.
+        return self.quoted(".".join(part.replace(self.quote_character, '')
+                                    for _, part in self._render_iterator() if part is not None))
+
     def _render_event_time_filtered(self, event_time_filter: EventTimeFilter) -> str:
         """
         Returns "" if start and end are both None
