@@ -44,10 +44,18 @@
   {% do adapter.set_query_callback_context(unique_id, none, none, dry_run) %}
 
   {# Create new table #}
-  {{ log("Creating table " ~ target_relation, info=True) }}
-  {%- call statement('main', language=language) -%}
-    {{ create_table_as(False, target_relation, compiled_code, language) }}
-  {%- endcall -%}
+  {%- if dry_run -%}
+    {# For dry_run, just validate the SQL without creating the table #}
+    {{ log("Dry run: validating SQL for " ~ target_relation, info=True) }}
+    {%- call statement('main', language=language) -%}
+      {{ compiled_code }}
+    {%- endcall -%}
+  {%- else -%}
+    {{ log("Creating table " ~ target_relation, info=True) }}
+    {%- call statement('main', language=language) -%}
+      {{ create_table_as(False, target_relation, compiled_code, language) }}
+    {%- endcall -%}
+  {%- endif -%}
 
   {# Clear callback context #}
   {% do adapter.clear_query_callback_context() %}

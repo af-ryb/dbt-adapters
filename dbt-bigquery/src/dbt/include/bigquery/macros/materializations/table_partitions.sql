@@ -125,10 +125,18 @@
   {%- if old_relation is none or not old_relation.is_table -%}
 
     {# Table doesn't exist: CREATE TABLE AS SELECT #}
-    {{ log("Creating new table " ~ target_relation, info=True) }}
-    {%- call statement('main', language=language) -%}
-      {{ create_table_as(False, target_relation, compiled_code, language) }}
-    {%- endcall -%}
+    {%- if dry_run -%}
+      {# For dry_run, just validate the SQL without creating the table #}
+      {{ log("Dry run: validating CREATE TABLE AS statement for " ~ target_relation, info=True) }}
+      {%- call statement('main', language=language) -%}
+        {{ compiled_code }}
+      {%- endcall -%}
+    {%- else -%}
+      {{ log("Creating new table " ~ target_relation, info=True) }}
+      {%- call statement('main', language=language) -%}
+        {{ create_table_as(False, target_relation, compiled_code, language) }}
+      {%- endcall -%}
+    {%- endif -%}
 
   {%- else -%}
 

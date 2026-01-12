@@ -410,6 +410,47 @@ class BigQueryConnectionManager(BaseConnectionManager):
 
             table = agate_helper.empty_table()
 
+        # For dry_run, return early without trying to get table metadata
+        if dry_run:
+            bytes_processed = query_job.total_bytes_processed
+            bytes_billed = query_job.total_bytes_billed
+            slot_ms = query_job.slot_millis
+            processed_bytes = self.format_bytes(bytes_processed) if bytes_processed else None
+
+            response = BigQueryAdapterResponse(
+                _message=f"DRY RUN ({processed_bytes} processed)" if processed_bytes else "DRY RUN",
+                code="DRY RUN",
+                bytes_processed=bytes_processed,
+                bytes_billed=bytes_billed,
+                location=query_job.location,
+                project_id=query_job.project,
+                job_id=query_job.job_id,
+                slot_ms=slot_ms,
+            )
+
+            # Fire 'done' callback if context was set
+            if callback_ctx:
+                try:
+                    post_query_status(PartitionsModelResp(
+                        unique_id=callback_ctx["unique_id"],
+                        job_id=query_job.job_id,
+                        status='done',
+                        success=True,
+                        start_date=callback_ctx.get("start_date"),
+                        end_date=callback_ctx.get("end_date"),
+                        error=None,
+                        dry_run=True,
+                        bytes_billed=bytes_billed,
+                        bytes_processed=bytes_processed,
+                        slot_ms=slot_ms,
+                        started=getattr(query_job, 'started', None),
+                        ended=getattr(query_job, 'ended', None),
+                    ))
+                except Exception as e:
+                    logger.debug(f"Failed to fire 'done' callback: {e}")
+
+            return response, table
+
         message = "OK"
         code = None
         num_rows = None
@@ -736,15 +777,20 @@ class BigQueryConnectionManager(BaseConnectionManager):
             )
 
         pre = time.perf_counter()
-        try:
-            iterator = query_job.result(max_results=limit)
-        except TimeoutError:
-            exc = f"Operation did not complete within the designated timeout of {timeout} seconds."
+
+        # Check if this is a dry run - dry run queries have no results to fetch
+        if job_params.get("dry_run", False):
+            iterator = None
+        else:
             try:
-                query_job.cancel()
-            except Exception as e:
-                logger.debug(f"Error cancelling query job: {e}")
-            raise TimeoutError(exc)
+                iterator = query_job.result(max_results=limit)
+            except TimeoutError:
+                exc = f"Operation did not complete within the designated timeout of {timeout} seconds."
+                try:
+                    query_job.cancel()
+                except Exception as e:
+                    logger.debug(f"Error cancelling query job: {e}")
+                raise TimeoutError(exc)
 
         fire_event(
             SQLQueryStatus(
