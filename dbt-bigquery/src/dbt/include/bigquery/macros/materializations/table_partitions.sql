@@ -127,7 +127,7 @@
     {# Table doesn't exist: CREATE TABLE AS SELECT #}
     {%- if dry_run -%}
       {# For dry_run, just validate the SQL without creating the table #}
-      {{ log("Dry run: validating CREATE TABLE AS statement for " ~ target_relation, info=True) }}
+      {{ log("Dry run: validating select statement for " ~ target_relation, info=True) }}
       {%- call statement('main', language=language) -%}
         {{ compiled_code }}
       {%- endcall -%}
