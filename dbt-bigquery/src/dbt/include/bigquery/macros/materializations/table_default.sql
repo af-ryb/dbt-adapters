@@ -19,8 +19,6 @@
   {%- set dry_run = var("dry_run", false) -%}
   {%- set unique_id = model.unique_id -%}
 
-  {{ log("Running table_default for " ~ target_relation ~ " (dry_run: " ~ dry_run ~ ")", info=True) }}
-
   {# Set callback context for web UI status display #}
   {% do adapter.set_query_callback_context(unique_id, none, none, dry_run) %}
 

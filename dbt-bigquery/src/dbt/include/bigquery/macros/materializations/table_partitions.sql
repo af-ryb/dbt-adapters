@@ -40,18 +40,15 @@
   {# Priority 1: default_start_date from config (overrides everything) #}
   {%- if default_start_date is not none %}
     {%- set start_date = modules.datetime.datetime.strptime(default_start_date, '%Y-%m-%d').date() -%}
-    {{ log("Using default_start_date from config: " ~ start_date, info=True) }}
 
   {# Priority 2: @start_date dynamic resolution via selector #}
   {%- elif start_date_var == '@start_date' %}
     {%- set interval = selector_update_range.get(run_tags, 0) -%}
     {%- set start_date = adapter.relative_start(interval) -%}
-    {{ log("Resolved @start_date with selector '" ~ run_tags ~ "' (interval: " ~ interval ~ ") to " ~ start_date, info=True) }}
 
   {# Priority 3: Explicit date string from runtime var #}
   {%- elif start_date_var -%}
     {%- set start_date = modules.datetime.datetime.strptime(start_date_var, '%Y-%m-%d').date() -%}
-    {{ log("Using explicit start_date: " ~ start_date, info=True) }}
 
   {%- else -%}
     {%- set start_date = none -%}
@@ -61,7 +58,6 @@
   {%- if start_date is not none and min_start_date is not none -%}
     {%- set min_date_obj = modules.datetime.datetime.strptime(min_start_date, '%Y-%m-%d').date() -%}
     {%- if start_date < min_date_obj -%}
-      {{ log("Adjusting start_date from " ~ start_date ~ " to min_start_date " ~ min_date_obj, info=True) }}
       {%- set start_date = min_date_obj -%}
     {%- endif -%}
   {%- endif -%}
@@ -72,11 +68,9 @@
   {%- if end_date_var == '@end_date' %}
     {# Default to today #}
     {%- set end_date = modules.datetime.date.today() -%}
-    {{ log("Resolved @end_date to today: " ~ end_date, info=True) }}
   {%- elif end_date_var -%}
     {# Explicit date string - parse it #}
     {%- set end_date = modules.datetime.datetime.strptime(end_date_var, '%Y-%m-%d').date() -%}
-    {{ log("Using explicit end_date: " ~ end_date, info=True) }}
   {%- else -%}
     {%- set end_date = modules.datetime.date.today() -%}
   {%- endif -%}
@@ -84,7 +78,7 @@
   {# Get dry_run flag #}
   {%- set dry_run = var("dry_run", false) -%}
 
-  {{ log("Date range: " ~ start_date ~ " to " ~ end_date ~ " (dry_run: " ~ dry_run ~ ")", info=True) }}
+  {{ log("Date range: " ~ start_date ~ " to " ~ end_date, info=True) }}
 
   {# ============================================ #}
   {# Pre-execution Setup                         #}
@@ -141,7 +135,9 @@
   {%- else -%}
 
     {# Table exists: Use multi-statement DELETE + INSERT #}
-    {{ log("Table exists, using DELETE + INSERT for partitions: " ~ start_date ~ " to " ~ end_date, info=True) }}
+    {%- if not dry_run -%}
+      {{ log("Table exists, using DELETE + INSERT for partitions: " ~ start_date ~ " to " ~ end_date, info=True) }}
+    {%- endif -%}
 
     {# Determine truncation function based on data type for granularity support #}
     {%- set trunc_func = 'TIMESTAMP_TRUNC' if partition_by.data_type == 'timestamp' else 'DATE_TRUNC' -%}
