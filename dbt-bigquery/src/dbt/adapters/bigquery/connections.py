@@ -412,20 +412,6 @@ class BigQueryConnectionManager(BaseConnectionManager):
         # auto_begin is ignored on bigquery, and only included for consistency
         query_job, iterator = self.raw_execute(sql, limit=limit, query_parameters=query_parameters, dry_run=dry_run)
 
-        # Fire 'running' callback with ACTUAL BigQuery job_id
-        if callback_ctx:
-            try:
-                post_query_status(PartitionsModelResp(
-                    unique_id=callback_ctx["unique_id"],
-                    job_id=query_job.job_id,  # Use REAL BigQuery job_id
-                    status='running',
-                    start_date=callback_ctx.get("start_date"),
-                    end_date=callback_ctx.get("end_date"),
-                    dry_run=callback_ctx.get("dry_run", False),
-                ))
-            except Exception as e:
-                logger.debug(f"Failed to fire 'running' callback: {e}")
-
         if fetch:
             table = self.get_table_from_response(iterator)
         else:
@@ -664,20 +650,6 @@ class BigQueryConnectionManager(BaseConnectionManager):
                 job_params,
                 job_id,
             )
-
-        # Fire 'running' callback with ACTUAL BigQuery job_id
-        if callback_ctx:
-            try:
-                post_query_status(PartitionsModelResp(
-                    unique_id=callback_ctx["unique_id"],
-                    job_id=query_job.job_id,
-                    status='running',
-                    start_date=callback_ctx.get("start_date"),
-                    end_date=callback_ctx.get("end_date"),
-                    dry_run=callback_ctx.get("dry_run", False),
-                ))
-            except Exception as e:
-                logger.debug(f"Failed to fire 'running' callback: {e}")
 
         from dbt_common.clients import agate_helper
         table = agate_helper.empty_table()
@@ -1010,6 +982,21 @@ class BigQueryConnectionManager(BaseConnectionManager):
             logger.debug(
                 self._bq_job_link(query_job.location, query_job.project, query_job.job_id)
             )
+
+        # Fire 'running' callback immediately after job submission (before blocking on result)
+        callback_ctx = self.get_callback_context()
+        if callback_ctx:
+            try:
+                post_query_status(PartitionsModelResp(
+                    unique_id=callback_ctx["unique_id"],
+                    job_id=query_job.job_id,
+                    status='running',
+                    start_date=callback_ctx.get("start_date"),
+                    end_date=callback_ctx.get("end_date"),
+                    dry_run=callback_ctx.get("dry_run", False),
+                ))
+            except Exception as e:
+                logger.debug(f"Failed to fire 'running' callback: {e}")
 
         pre = time.perf_counter()
 
