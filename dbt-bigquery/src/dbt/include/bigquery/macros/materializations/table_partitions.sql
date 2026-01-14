@@ -161,7 +161,7 @@
       {# Delete partitions in range first #}
       {%- set delete_sql -%}
 DELETE FROM `{{ target_relation.database }}.{{ target_relation.schema }}.{{ target_relation.identifier }}`
-WHERE {{ trunc_func }}({{ partition_field }}, {{ partition_by.granularity.upper() }}) BETWEEN @start_date AND @end_date
+WHERE DATE({{ trunc_func }}({{ partition_field }}, {{ partition_by.granularity.upper() }})) BETWEEN DATE(@start_date) AND DATE(@end_date)
       {%- endset -%}
 
       {%- call statement('delete_partitions', language=language) -%}
