@@ -198,12 +198,18 @@ WHERE DATE({{ trunc_func }}({{ partition_field }}, {{ partition_by.granularity.u
 
   {{ run_hooks(post_hooks) }}
 
-  {# Apply grants #}
-  {% set should_revoke = should_revoke(old_relation, full_refresh_mode=True) %}
-  {% do apply_grants(target_relation, grant_config, should_revoke) %}
+  {# Skip grants + persist_docs on dry_run: both mutate the relation (grants DDL /
+     table+column metadata via the BigQuery API), and on a table that dry_run did
+     not create they would fail with NotFound. dry_run must have no side effects.
+     Matches the table_default materialization. #}
+  {%- if not dry_run -%}
+    {# Apply grants #}
+    {% set should_revoke = should_revoke(old_relation, full_refresh_mode=True) %}
+    {% do apply_grants(target_relation, grant_config, should_revoke) %}
 
-  {# Persist documentation #}
-  {% do persist_docs(target_relation, model) %}
+    {# Persist documentation #}
+    {% do persist_docs(target_relation, model) %}
+  {%- endif -%}
 
   {{ return({'relations': [target_relation]}) }}
 

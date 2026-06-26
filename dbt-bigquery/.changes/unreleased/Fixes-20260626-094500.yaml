@@ -1,0 +1,9 @@
+kind: Fixes
+body: 'table_partitions materialization: skip apply_grants and persist_docs on
+  dry_run. Both mutate the relation (grants DDL / table+column metadata via the
+  BigQuery API) and would fail with NotFound on a table dry_run did not create;
+  dry_run must have no side effects. Aligns with the table_default materialization'
+time: 2026-06-26T09:45:00.000000+05:30
+custom:
+  Author: af-ryb
+  Issue: ""
