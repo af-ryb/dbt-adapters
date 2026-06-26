@@ -1,8 +1,9 @@
 kind: Under the Hood
 body: 'table_partitions materialization: read selector_update_range, min_start_date
-  and default_start_date from config.meta, with a transitional fallback to the
-  top-level config keys so models can migrate to meta without a lockstep deploy
-  (avoids dbt-core CustomKeyInConfigDeprecation / D026)'
+  and default_start_date from config.meta instead of top-level config keys. This
+  avoids dbt-core CustomKeyInConfigDeprecation (D026) for these custom keys, and
+  reading them straight from meta (never config.get) also avoids the meta_get
+  nudge warning'
 time: 2026-06-26T09:30:00.000000+05:30
 custom:
   Author: af-ryb

@@ -14,12 +14,13 @@
 
   -- Configuration
   {%- set grant_config = config.get('grants') -%}
-  {# Read date-range keys from config.meta, with transitional fallback to top-level
-     config so models can migrate to `meta` without a lockstep adapter/model deploy. #}
+  {# Read date-range keys from config.meta. These are custom keys, so they live
+     under `meta` to avoid dbt-core's CustomKeyInConfigDeprecation (D026); reading
+     them from meta (never config.get) also avoids the meta_get nudge warning. #}
   {%- set _meta = config.get('meta', {}) -%}
-  {%- set selector_update_range = _meta.get('selector_update_range', config.get('selector_update_range', default={})) -%}
-  {%- set min_start_date = _meta.get('min_start_date', config.get('min_start_date', none)) -%}
-  {%- set default_start_date = _meta.get('default_start_date', config.get('default_start_date', none)) -%}
+  {%- set selector_update_range = _meta.get('selector_update_range', {}) -%}
+  {%- set min_start_date = _meta.get('min_start_date', none) -%}
+  {%- set default_start_date = _meta.get('default_start_date', none) -%}
   {%- set raw_partition_by = config.get('partition_by', none) -%}
   {%- set partition_by = adapter.parse_partition_by(raw_partition_by) -%}
   {%- set cluster_by = config.get('cluster_by', none) -%}
