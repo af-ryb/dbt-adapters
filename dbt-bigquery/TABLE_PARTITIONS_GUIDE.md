@@ -9,8 +9,7 @@ The `table_partitions` materialization extends the standard `table` materializat
 1. **Query Parameters**: Inject runtime parameters (`@start_date`, `@end_date`) into BigQuery queries
 2. **Dynamic Date Resolution**: Calculate date ranges based on selectors and relative intervals
 3. **Automatic Partition Deletion**: Delete existing partitions before writing new data (zero-cost in BigQuery)
-4. **Real-time Status Callbacks**: Send query execution status to external APIs
-5. **Dry Run Support**: Test queries without executing them
+4. **Dry Run Support**: Test queries without executing them
 
 ## Features
 
@@ -140,48 +139,7 @@ The DELETE statement automatically uses the correct truncation function:
 
 **Why this matters**: Without proper truncation, BigQuery charges for scanning partitions when granularity is not `DAY`. The materialization handles this automatically to maintain zero-cost deletion.
 
-### 4. Real-time Status Callbacks
-
-Enable real-time query status updates to external APIs by setting environment variables:
-
-```bash
-export DBT_URL="https://your-api.com"
-export API_KEY="your-api-key"
-```
-
-The adapter will POST status updates to `{DBT_URL}/dbt/set_query_status`:
-
-**Running status:**
-```json
-{
-  "unique_id": "model.my_project.my_model",
-  "job_id": "abc-123-def",
-  "status": "running",
-  "start_date": "2025-10-01",
-  "end_date": "2025-10-31",
-  "dry_run": false
-}
-```
-
-**Done status:**
-```json
-{
-  "unique_id": "model.my_project.my_model",
-  "job_id": "abc-123-def",
-  "status": "done",
-  "success": true,
-  "start_date": "2025-10-01",
-  "end_date": "2025-10-31",
-  "bytes_billed": 1024000,
-  "bytes_processed": 2048000,
-  "slot_ms": 5000,
-  "started": "2025-11-01T10:00:00Z",
-  "ended": "2025-11-01T10:00:05Z",
-  "dry_run": false
-}
-```
-
-### 5. Dry Run Support
+### 4. Dry Run Support
 
 Test queries without executing them:
 
@@ -297,7 +255,8 @@ Calculate relative start date:
 
 ### `adapter.set_query_callback_context(unique_id, start_date, end_date, dry_run)`
 
-Set callback context for real-time status updates.
+Set the per-thread execution context (notably the `dry_run` flag) that the adapter
+reads when executing the model's queries.
 
 ### `adapter.set_query_parameters(query_params)`
 
@@ -308,14 +267,6 @@ Set query parameters for next execution.
 ### Query parameters not working
 
 Ensure you're using `@start_date` and `@end_date` in your SQL (with `@` prefix).
-
-### Callbacks not firing
-
-Check environment variables are set:
-```bash
-echo $DBT_URL
-echo $API_KEY
-```
 
 ### Partitions not being deleted
 
@@ -329,8 +280,7 @@ Ensure:
 1. **Use partition pruning**: Always filter on partition field with `@start_date` and `@end_date`
 2. **Cluster wisely**: Add clustering on frequently filtered columns
 3. **Test with dry_run**: Validate query cost before executing
-4. **Monitor callbacks**: Use status updates to track query performance
 
 ## License
 
-This feature set extends the official dbt BigQuery adapter with custom functionality for partition management and real-time monitoring.
+This feature set extends the official dbt BigQuery adapter with custom functionality for partition management.

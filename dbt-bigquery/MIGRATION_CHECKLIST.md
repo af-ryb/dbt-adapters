@@ -8,17 +8,11 @@ This checklist guides you through migrating from the old custom dbt-bq-connector
 - [ ] Document all custom materialization configurations
 - [ ] Export list of models using `table_partitions` materialization
 - [ ] Document all `selector_update_range` configurations
-- [ ] Save current `dbt_connector.py` integration points
 - [ ] Note any custom `run_query()` calls
 
 ### 2. Environment Preparation
 - [ ] Clone new adapter: `/home/miniserver/repo/dbt-adapters/dbt-bigquery`
-- [ ] Verify Python dependencies (check for `dateutil`, `requests`)
-- [ ] Set up environment variables for callbacks:
-  ```bash
-  export DBT_URL="https://your-api.com"
-  export API_KEY="your-api-key"
-  ```
+- [ ] Verify Python dependencies (check for `dateutil`)
 
 ## Migration Steps
 
@@ -79,42 +73,7 @@ WHERE date BETWEEN {{ var('start_date') }} AND {{ var('end_date') }}
 - [ ] Confirm `@start_date` and `@end_date` usage
 - [ ] Test queries with `dry_run` mode
 
-### Step 4: Update `dbt_connector.py` Integration
-
-#### Old Integration
-```python
-# Old: Custom adapter import
-from dbt_bq_connector.adapters.bigquery import impl_utils
-
-# Old: prepare_results_from_callback
-def prepare_results_from_callback(self, query_status: PartitionsModelResp):
-    # ... handling callback ...
-```
-
-#### New Integration
-```python
-# New: Standard adapter + callbacks module
-from dbt.adapters.bigquery.callbacks import PartitionsModelResp
-
-# Callbacks now fire automatically from adapter
-# No code changes needed in dbt_connector.py!
-```
-
-Changes needed in `/home/miniserver/repo/hitapps_analytics/dbt_app/src/dbt_connector.py`:
-
-- [ ] Update import path:
-  ```python
-  # Old
-  from dbt_bq_connector.adapters.bigquery.impl_utils import PartitionsModelResp
-
-  # New
-  from dbt.adapters.bigquery.callbacks import PartitionsModelResp
-  ```
-
-- [ ] Verify `prepare_results_from_callback()` still works
-- [ ] Test callback endpoint receives POST requests
-
-### Step 5: Test Migration
+### Step 4: Test Migration
 
 #### Test 1: Dry Run
 ```bash
@@ -135,7 +94,6 @@ dbt run --select your_test_model \
 - [ ] Model runs successfully
 - [ ] Partitions deleted correctly
 - [ ] Data written to BigQuery
-- [ ] Callbacks received (check API logs)
 
 #### Test 3: Selector-Based Run
 ```bash
@@ -148,18 +106,7 @@ dbt run --select tag:daily \
 - [ ] `min_start_date` respected
 - [ ] All tagged models run
 
-#### Test 4: Callback Verification
-- [ ] Check API receives `status='running'` callback
-- [ ] Check API receives `status='done'` callback
-- [ ] Verify callback payload includes:
-  - `unique_id`
-  - `job_id`
-  - `start_date` / `end_date`
-  - `bytes_billed` / `bytes_processed`
-  - `slot_ms`
-  - `started` / `ended`
-
-### Step 6: Full Integration Test
+### Step 5: Full Integration Test
 
 Run complete workflow:
 
@@ -177,10 +124,8 @@ dbt run --select tag:monthly --vars '{"start_date": "@start_date", "run_tags": "
 - [ ] All selectors work correctly
 - [ ] Date ranges calculated properly
 - [ ] Partitions managed correctly
-- [ ] Callbacks flow through API → UI
-- [ ] UI displays real-time status
 
-### Step 7: Performance Validation
+### Step 6: Performance Validation
 
 Compare old vs new adapter:
 
@@ -188,12 +133,10 @@ Compare old vs new adapter:
 |--------|-------------|-------------|-------|
 | Query execution time | | | Should be same |
 | Partition deletion | | | Should be same (DML) |
-| Callback latency | | | Should be faster |
 | Memory usage | | | Should be same |
 | dbt compilation time | | | Should be same |
 
 - [ ] No performance regression
-- [ ] Callbacks still near real-time
 - [ ] BigQuery costs unchanged
 
 ## Post-Migration
@@ -218,7 +161,6 @@ Compare old vs new adapter:
 - [ ] Share `TABLE_PARTITIONS_GUIDE.md` with team
 
 ### Monitoring Setup
-- [ ] Set up alerts for callback failures
 - [ ] Monitor BigQuery job costs
 - [ ] Track partition deletion operations
 - [ ] Log query parameter usage
@@ -232,13 +174,7 @@ If issues arise:
    pip install -e /home/miniserver/repo/dbt-bq-connector
    ```
 
-2. **Restore dbt_connector.py**:
-   ```python
-   # Revert import paths to old adapter
-   from dbt_bq_connector.adapters.bigquery.impl_utils import PartitionsModelResp
-   ```
-
-3. **Test old adapter**:
+2. **Test old adapter**:
    ```bash
    dbt run --select tag:daily --vars '{"start_date": "@start_date", "run_tags": "daily"}'
    ```
@@ -254,14 +190,6 @@ pip install --force-reinstall -e /home/miniserver/repo/dbt-adapters/dbt-bigquery
 ### Issue: Query parameters not working
 **Solution**: Verify SQL uses `@start_date` and `@end_date` (not Jinja vars)
 
-### Issue: Callbacks not received
-**Solution**: Check environment variables and API endpoint
-```bash
-echo $DBT_URL
-echo $API_KEY
-curl -X POST $DBT_URL/dbt/set_query_status -H "X-API-KEY: $API_KEY"
-```
-
 ### Issue: Partitions not deleted
 **Solution**: Verify partition_by config and table exists
 
@@ -273,8 +201,6 @@ curl -X POST $DBT_URL/dbt/set_query_status -H "X-API-KEY: $API_KEY"
 - [x] ✅ All models compile without errors
 - [x] ✅ Models execute successfully with query parameters
 - [x] ✅ Partitions deleted before write
-- [x] ✅ Callbacks received in API
-- [x] ✅ UI displays real-time status
 - [x] ✅ Selector-based date resolution works
 - [x] ✅ No performance regression
 - [x] ✅ Team trained on new adapter

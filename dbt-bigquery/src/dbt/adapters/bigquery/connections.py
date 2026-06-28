@@ -40,7 +40,6 @@ from dbt.adapters.events.logging import AdapterLogger
 from dbt.adapters.events.types import SQLQuery, SQLQueryStatus
 from dbt.adapters.exceptions.connection import FailedToConnectError
 from dbt.adapters.bigquery.clients import create_bigquery_client
-from dbt.adapters.bigquery.callbacks import PartitionsModelResp, post_query_status
 from dbt.adapters.bigquery.credentials import Priority
 from dbt.adapters.bigquery.retry import RetryFactory
 
@@ -78,38 +77,15 @@ class BigQueryConnectionManager(BaseConnectionManager):
         # Thread-local storage for query parameters
         self.query_parameters: Dict[Hashable, Optional[List[Dict]]] = defaultdict(lambda: None)
 
-    def handle_error(self, error, message):
+    @classmethod
+    def handle_error(cls, error, message):
         error_msg = "\n".join([item["message"] for item in error.errors])
         if hasattr(error, "query_job"):
             logger.error(
-                self._bq_job_link(
+                cls._bq_job_link(
                     error.query_job.location, error.query_job.project, error.query_job.job_id
                 )
             )
-
-        # Send error status via callback if context is set
-        callback_ctx = self.get_callback_context()
-        if callback_ctx:
-            try:
-                job_id = error.query_job.job_id if hasattr(error, "query_job") else None
-                post_query_status(PartitionsModelResp(
-                    unique_id=callback_ctx["unique_id"],
-                    job_id=job_id,
-                    status='done',
-                    success=False,
-                    start_date=callback_ctx.get("start_date"),
-                    end_date=callback_ctx.get("end_date"),
-                    error=error_msg,
-                    dry_run=callback_ctx.get("dry_run", False),
-                    bytes_billed=None,
-                    bytes_processed=None,
-                    slot_ms=None,
-                    started=None,
-                    ended=None,
-                ))
-            except Exception as e:
-                logger.debug(f"Failed to fire error callback: {e}")
-
         raise DbtDatabaseError(error_msg)
 
     def clear_transaction(self):
@@ -417,10 +393,10 @@ class BigQueryConnectionManager(BaseConnectionManager):
         if query_parameters is None:
             query_parameters = self.get_query_parameters()
 
-        # Get callback context (will fire after we have real job_id)
+        # Read the thread-local context for the dry_run flag (set by materializations)
         callback_ctx = self.get_callback_context()
 
-        # Check for dry_run from callback context if not explicitly provided
+        # Check for dry_run from context if not explicitly provided
         if not dry_run and callback_ctx:
             dry_run = callback_ctx.get("dry_run", False)
 
@@ -452,27 +428,6 @@ class BigQueryConnectionManager(BaseConnectionManager):
                 job_id=query_job.job_id,
                 slot_ms=slot_ms,
             )
-
-            # Fire 'done' callback if context was set
-            if callback_ctx:
-                try:
-                    post_query_status(PartitionsModelResp(
-                        unique_id=callback_ctx["unique_id"],
-                        job_id=query_job.job_id,
-                        status='done',
-                        success=True,
-                        start_date=callback_ctx.get("start_date"),
-                        end_date=callback_ctx.get("end_date"),
-                        error=None,
-                        dry_run=True,
-                        bytes_billed=bytes_billed,
-                        bytes_processed=bytes_processed,
-                        slot_ms=slot_ms,
-                        started=getattr(query_job, 'started', None),
-                        ended=getattr(query_job, 'ended', None),
-                    ))
-                except Exception as e:
-                    logger.debug(f"Failed to fire 'done' callback: {e}")
 
             return response, table
 
@@ -541,34 +496,6 @@ class BigQueryConnectionManager(BaseConnectionManager):
             slot_ms=slot_ms,
         )
 
-        # Fire 'done' callback if context was set (use same job_id as 'running')
-        if callback_ctx:
-            try:
-                # Check for errors
-                error_msg = None
-                success = True
-                if hasattr(query_job, 'errors') and query_job.errors:
-                    error_msg = '; '.join([e.get('message', str(e)) for e in query_job.errors])
-                    success = False
-
-                post_query_status(PartitionsModelResp(
-                    unique_id=callback_ctx["unique_id"],
-                    job_id=job_id,  # Use same BigQuery job_id as 'running' callback
-                    status='done',
-                    success=success,
-                    start_date=callback_ctx.get("start_date"),
-                    end_date=callback_ctx.get("end_date"),
-                    error=error_msg,
-                    dry_run=callback_ctx.get("dry_run", False),
-                    bytes_billed=bytes_billed,
-                    bytes_processed=bytes_processed,
-                    slot_ms=slot_ms,
-                    started=getattr(query_job, 'started', None),
-                    ended=getattr(query_job, 'ended', None),
-                ))
-            except Exception as e:
-                logger.debug(f"Failed to fire 'done' callback: {e}")
-
         return response, table
 
     def execute_to_table(
@@ -607,10 +534,10 @@ class BigQueryConnectionManager(BaseConnectionManager):
         if query_parameters is None:
             query_parameters = self.get_query_parameters()
 
-        # Get callback context
+        # Read the thread-local context for the dry_run flag (set by materializations)
         callback_ctx = self.get_callback_context()
 
-        # Check for dry_run from callback context if not explicitly provided
+        # Check for dry_run from context if not explicitly provided
         if not dry_run and callback_ctx:
             dry_run = callback_ctx.get("dry_run", False)
 
@@ -688,26 +615,6 @@ class BigQueryConnectionManager(BaseConnectionManager):
                 slot_ms=slot_ms,
             )
 
-            if callback_ctx:
-                try:
-                    post_query_status(PartitionsModelResp(
-                        unique_id=callback_ctx["unique_id"],
-                        job_id=query_job.job_id,
-                        status='done',
-                        success=True,
-                        start_date=callback_ctx.get("start_date"),
-                        end_date=callback_ctx.get("end_date"),
-                        error=None,
-                        dry_run=True,
-                        bytes_billed=bytes_billed,
-                        bytes_processed=bytes_processed,
-                        slot_ms=slot_ms,
-                        started=getattr(query_job, 'started', None),
-                        ended=getattr(query_job, 'ended', None),
-                    ))
-                except Exception as e:
-                    logger.debug(f"Failed to fire 'done' callback: {e}")
-
             return response, table
 
         # Build response for successful execution
@@ -739,33 +646,6 @@ class BigQueryConnectionManager(BaseConnectionManager):
             job_id=job_id,
             slot_ms=slot_ms,
         )
-
-        # Fire 'done' callback
-        if callback_ctx:
-            try:
-                error_msg = None
-                success = True
-                if hasattr(query_job, 'errors') and query_job.errors:
-                    error_msg = '; '.join([e.get('message', str(e)) for e in query_job.errors])
-                    success = False
-
-                post_query_status(PartitionsModelResp(
-                    unique_id=callback_ctx["unique_id"],
-                    job_id=job_id,
-                    status='done',
-                    success=success,
-                    start_date=callback_ctx.get("start_date"),
-                    end_date=callback_ctx.get("end_date"),
-                    error=error_msg,
-                    dry_run=callback_ctx.get("dry_run", False),
-                    bytes_billed=bytes_billed,
-                    bytes_processed=bytes_processed,
-                    slot_ms=slot_ms,
-                    started=getattr(query_job, 'started', None),
-                    ended=getattr(query_job, 'ended', None),
-                ))
-            except Exception as e:
-                logger.debug(f"Failed to fire 'done' callback: {e}")
 
         return response, table
 
@@ -1019,21 +899,6 @@ class BigQueryConnectionManager(BaseConnectionManager):
                 logger.info(job_link)
             else:
                 logger.debug(job_link)
-
-        # Fire 'running' callback immediately after job submission (before blocking on result)
-        callback_ctx = self.get_callback_context()
-        if callback_ctx:
-            try:
-                post_query_status(PartitionsModelResp(
-                    unique_id=callback_ctx["unique_id"],
-                    job_id=query_job.job_id,
-                    status='running',
-                    start_date=callback_ctx.get("start_date"),
-                    end_date=callback_ctx.get("end_date"),
-                    dry_run=callback_ctx.get("dry_run", False),
-                ))
-            except Exception as e:
-                logger.debug(f"Failed to fire 'running' callback: {e}")
 
         pre = time.perf_counter()
 
